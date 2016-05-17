@@ -1,10 +1,16 @@
 package net.sf.lightair;
 
 import static net.sourceforge.jwebunit.junit.JWebUnit.setBaseUrl;
-import net.sf.lightair.annotation.BaseUrl;
-import net.sf.lightair.annotation.Setup;
-import net.sf.lightair.annotation.Verify;
-import net.sf.lightair.internal.factory.Factory;
+
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.IInvokedMethod;
@@ -14,7 +20,10 @@ import org.testng.ITestListener;
 import org.testng.ITestResult;
 import org.testng.internal.ConstructorOrMethod;
 
-import java.lang.reflect.Method;
+import net.sf.lightair.annotation.BaseUrl;
+import net.sf.lightair.annotation.Setup;
+import net.sf.lightair.annotation.Verify;
+import net.sf.lightair.internal.factory.Factory;
 
 /**
  * Light air TestNG listener.
@@ -38,17 +47,49 @@ public class LightAirNGListener implements IInvokedMethodListener, ITestListener
 	 * Method executed before every test method handling db setup and base url for JWebUnit
 	 */
 	public void beforeInvocation(IInvokedMethod iInvokedMethod, ITestResult iTestResult) {
+		// light-air is for test methods only
+		if (!iInvokedMethod.isTestMethod()) {
+			log.info("Invoked setup for non-test method [{}].", iInvokedMethod);
+			return;
+		}
+		log.info("Invoked setup for test method [{}].", iInvokedMethod);
 		ConstructorOrMethod constructorOrMethod = iInvokedMethod.getTestMethod().getConstructorOrMethod();
-		Method method = constructorOrMethod.getMethod();
+		final Method method = constructorOrMethod.getMethod();
 		if (method != null) {
-			Setup[] setups = getActiveSetupAnnotation(method);
+			final Setup[] setups = getActiveSetupAnnotation(method);
 			if (null != setups) {
+				Map<String, List<Setup>> setupMap = new HashMap<String, List<Setup>>();
 				for (Setup set : setups) {
-					Factory.getInstance().getSetupExecutor().execute(set, method);
+					String profile = set.profile();
+					if (setupMap.containsKey(profile)) {
+						setupMap.get(profile).add(set);
+					} else {
+						ArrayList<Setup> listForProfile = new ArrayList<Setup>();
+						listForProfile.add(set);
+						setupMap.put(profile, listForProfile);
+					}
+				}
+				ArrayList<Callable<Void>> callables = new ArrayList<Callable<Void>>();
+				for (final Map.Entry<String, List<Setup>> entry : setupMap.entrySet()) {
+					callables.add(new Callable<Void>() {
+						@Override
+						public Void call() throws Exception {
+							for (Setup set : entry.getValue()) {
+								Factory.getInstance().getSetupExecutor().execute(set, method);
+							}
+							return null;
+						}
+					});
+				}
+				ExecutorService execSvc = Executors.newCachedThreadPool();
+				try {
+					execSvc.invokeAll(callables);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
 				}
 			}
 			BaseUrl baseUrl = getActiveBaseUrlAnnotation(method);
-			if (null != baseUrl){
+			if (null != baseUrl) {
 				log.info("Applying base URL [{}].", baseUrl);
 				setBaseUrl(baseUrl.value());
 			}
@@ -59,6 +100,12 @@ public class LightAirNGListener implements IInvokedMethodListener, ITestListener
 	 * Method executed after every test method handling db verification
 	 */
 	public void afterInvocation(IInvokedMethod iInvokedMethod, ITestResult iTestResult) {
+		// light-air is for test methods only
+		if (!iInvokedMethod.isTestMethod()) {
+			log.info("Invoked verify for non-test method [{}].", iInvokedMethod);
+			return;
+		}
+		log.info("Invoked verify for test method [{}].", iInvokedMethod);
 		ConstructorOrMethod constructorOrMethod = iInvokedMethod.getTestMethod().getConstructorOrMethod();
 		Method method = constructorOrMethod.getMethod();
 		if (method != null) {
@@ -72,15 +119,15 @@ public class LightAirNGListener implements IInvokedMethodListener, ITestListener
 	}
 
 	/**
-	 * Get Setup for executing before given method. If no @Setup or @Setup.List is present on the method, class annotations are used.
+	 * Get Setup for executing before given method. If no @Setup or @Setup.List is present on the method, class
+	 * annotations are used.
 	 */
-	private Setup[] getActiveSetupAnnotation(
-			Method method) {
+	private Setup[] getActiveSetupAnnotation(Method method) {
 		Setup methodSetupAnnotation = method.getAnnotation(Setup.class);
 		Setup.List methodListAnnotation = method.getAnnotation(Setup.List.class);
 		Setup[] setups = null;
 		if (null != methodSetupAnnotation) {
-			setups = new Setup[]{methodSetupAnnotation};
+			setups = new Setup[] { methodSetupAnnotation };
 		} else if (null != methodListAnnotation) {
 			setups = methodListAnnotation.value();
 		}
@@ -88,7 +135,7 @@ public class LightAirNGListener implements IInvokedMethodListener, ITestListener
 			Setup classSetupAnnotation = method.getDeclaringClass().getAnnotation(Setup.class);
 			Setup.List classListAnnotation = method.getDeclaringClass().getAnnotation(Setup.List.class);
 			if (null != classSetupAnnotation) {
-				setups = new Setup[]{classSetupAnnotation};
+				setups = new Setup[] { classSetupAnnotation };
 			} else if (null != classListAnnotation) {
 				setups = classListAnnotation.value();
 			}
@@ -97,15 +144,15 @@ public class LightAirNGListener implements IInvokedMethodListener, ITestListener
 	}
 
 	/**
-	 * Get Setup for executing before given method. If no @Verify or @Verify.List is present on the method, class annotations are used.
+	 * Get Setup for executing before given method. If no @Verify or @Verify.List is present on the method, class
+	 * annotations are used.
 	 */
-	private Verify[] getActiveVerifyAnnotation(
-			Method method) {
+	private Verify[] getActiveVerifyAnnotation(Method method) {
 		Verify methodVerifyAnnotation = method.getAnnotation(Verify.class);
 		Verify.List methodListAnnotation = method.getAnnotation(Verify.List.class);
 		Verify[] verifies = null;
 		if (null != methodVerifyAnnotation) {
-			verifies = new Verify[]{methodVerifyAnnotation};
+			verifies = new Verify[] { methodVerifyAnnotation };
 		} else if (null != methodListAnnotation) {
 			verifies = methodListAnnotation.value();
 		}
@@ -113,7 +160,7 @@ public class LightAirNGListener implements IInvokedMethodListener, ITestListener
 			Verify classVerifyAnnotation = method.getDeclaringClass().getAnnotation(Verify.class);
 			Verify.List classListAnnotation = method.getDeclaringClass().getAnnotation(Verify.List.class);
 			if (null != classVerifyAnnotation) {
-				verifies = new Verify[]{classVerifyAnnotation};
+				verifies = new Verify[] { classVerifyAnnotation };
 			} else if (null != classListAnnotation) {
 				verifies = classListAnnotation.value();
 			}
